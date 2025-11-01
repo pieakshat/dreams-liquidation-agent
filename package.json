@@ -1,0 +1,17 @@
+{
+  "name": "my-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@daydreamsai/core": "^0.3.22",
+    "ai": "^5.0.86",
+    "typescript": "^5.9.3",
+    "zod": "^4.1.12",
+    "@ai-sdk/groq": "^2.0.27",
+    "@daydreamsai/cli": "^0.3.22"
+  }
+}
