@@ -1,11 +1,15 @@
 /**
  * Aave V3 protocol integration utilities
- * Fetches borrow positions from Aave on Ethereum Mainnet
+ * Fetches borrow positions from Aave on Ethereum Mainnet using direct contract calls
  */
 
-import type { PositionMemory } from "../types/memory.js";
-import { PROTOCOL_CONFIGS } from "./config.js";
-import { getTokenPrice, TOKEN_MAP } from "./prices.js";
+import { createPublicClient, http, formatUnits, getAddress } from "viem";
+import { mainnet } from "viem/chains";
+import { NETWORKS } from "./config.js";
+import { getTokenPrice } from "./prices.js";
+import {
+    AAVE_POOL_ABI,
+} from "./contracts.js";
 
 export interface AavePosition {
     id: string;
@@ -19,184 +23,129 @@ export interface AavePosition {
     liquidationThreshold: number;
 }
 
+// Aave V3 Contract Addresses on Ethereum Mainnet (properly checksummed)
+const AAVE_V3_POOL = getAddress("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"); // Pool proxy (Ethereum)
+
 /**
- * Fetch user positions from Aave V3 using subgraph
+ * Create a viem public client for Ethereum mainnet
+ */
+function getClient() {
+    return createPublicClient({
+        chain: mainnet,
+        transport: http(NETWORKS.MAINNET.rpcUrl),
+    });
+}
+
+/**
+ * Helper: percent from basis points (e.g., 8250 -> 82.5)
+ * This matches the ethers.js script exactly
+ */
+const bpsToPercent = (bps: bigint | number): number => {
+    return Number(bps) / 100;
+};
+
+/**
+ * Fetch user positions from Aave V3 using direct contract calls
+ * This implementation matches the working ethers.js script exactly
  */
 export async function fetchAavePositions(
     walletAddress: string
 ): Promise<AavePosition[]> {
-    const config = PROTOCOL_CONFIGS["aave-v3"];
     const positions: AavePosition[] = [];
+    const client = getClient();
 
     try {
-        // Query Aave subgraph for user positions
-        const query = `
-            query GetUserPositions($userAddress: String!) {
-                userPositions(where: { user: $userAddress }) {
-                    id
-                    user
-                    reserves {
-                        id
-                        symbol
-                        decimals
-                        liquidationThreshold
-                        price {
-                            priceInEth
-                        }
-                    }
-                    supplies {
-                        reserve {
-                            symbol
-                        }
-                        scaledATokenBalance
-                    }
-                    borrows {
-                        reserve {
-                            symbol
-                            decimals
-                        }
-                        scaledVariableDebt
-                        principalStableDebt
-                    }
-                }
-            }
-        `;
+        console.log(`[Aave] Fetching positions for ${walletAddress}`);
 
-        const response = await fetch(config.subgraphUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                query,
-                variables: { userAddress: walletAddress.toLowerCase() },
-            }),
+        // Normalize wallet address to checksummed format
+        const normalizedWallet = getAddress(walletAddress);
+
+        // Call the proxy contract directly with the Pool ABI (exact same as ethers.js script)
+        // The proxy will automatically delegate to the implementation
+        console.log(`[Aave] Calling getUserAccountData on proxy contract ${AAVE_V3_POOL}`);
+
+        // Call getUserAccountData (same as pool.getUserAccountData(user) in ethers.js)
+        const res = await client.readContract({
+            address: AAVE_V3_POOL,
+            abi: AAVE_POOL_ABI,
+            functionName: "getUserAccountData",
+            args: [normalizedWallet],
+        }) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
+
+        // Destructure the result (exact same as ethers.js script)
+        const [
+            totalCollateralBase,
+            totalDebtBase,
+            availableBorrowsBase,
+            currentLiquidationThreshold,
+            ltv,
+            healthFactor,
+        ] = res;
+
+        // Aave v3 returns base-unit values scaled to 1e18 for these three,
+        // healthFactor is also 1e18-scaled. LTV & CLT are in basis points.
+        const DECIMALS_18 = 18;
+
+        // Format values (exact same as ethers.js script)
+        const formatted = {
+            totalCollateral: Number(formatUnits(totalCollateralBase, DECIMALS_18)),
+            totalDebt: Number(formatUnits(totalDebtBase, DECIMALS_18)),
+            availableBorrows: Number(formatUnits(availableBorrowsBase, DECIMALS_18)),
+            liquidationThresholdBps: Number(currentLiquidationThreshold),
+            liquidationThresholdPercent: bpsToPercent(currentLiquidationThreshold),
+            ltvBps: Number(ltv),
+            ltvPercent: bpsToPercent(ltv),
+            healthFactor: Number(formatUnits(healthFactor, DECIMALS_18)),
+        };
+
+        console.log(`[Aave] Account data:`, {
+            totalCollateral: formatted.totalCollateral,
+            totalDebt: formatted.totalDebt,
+            availableBorrows: formatted.availableBorrows,
+            liquidationThresholdPercent: formatted.liquidationThresholdPercent,
+            ltvPercent: formatted.ltvPercent,
+            healthFactor: formatted.healthFactor,
         });
 
-        const data = await response.json();
-
-        if (data.errors) {
-            console.error("Subgraph query errors:", data.errors);
-            // Fallback to API method
-            return await fetchAavePositionsFromAPI(walletAddress);
-        }
-
-        // Process subgraph data
-        if (data.data?.userPositions) {
-            // Implementation depends on subgraph schema
-            // For now, fallback to API
-            return await fetchAavePositionsFromAPI(walletAddress);
-        }
-
-        return positions;
-    } catch (error) {
-        console.error("Error fetching Aave positions from subgraph:", error);
-        // Fallback to API
-        return await fetchAavePositionsFromAPI(walletAddress);
-    }
-}
-
-/**
- * Alternative: Fetch positions from Aave API
- * This is a simplified version - in production you'd use the full API
- */
-async function fetchAavePositionsFromAPI(
-    walletAddress: string
-): Promise<AavePosition[]> {
-    const positions: AavePosition[] = [];
-
-    try {
-        // Aave API endpoint for user data
-        // Note: This is a simplified example - actual Aave API structure may differ
-        const apiUrl = `https://aave-api-v2.aave.com/data/ethereum/mainnet/user/${walletAddress}`;
-
-        const response = await fetch(apiUrl);
-
-        if (!response.ok) {
-            console.error(`Aave API error: ${response.status}`);
+        // If no debt, return empty
+        if (formatted.totalDebt === 0 || totalDebtBase === 0n) {
+            console.log("[Aave] No debt found, returning empty positions");
             return positions;
         }
 
-        let data;
-        try {
-            const text = await response.text();
-            if (!text || text.trim() === '') {
-                console.error("Aave API returned empty response");
-                return positions;
-            }
-            data = JSON.parse(text);
-        } catch (parseError) {
-            console.error("Failed to parse Aave API response:", parseError);
-            return positions;
-        }
+        // Simplified approach: Create aggregate position from account data
+        // For a more detailed breakdown, we'd need to iterate reserves, but that's slow
+        // This gives us a consolidated view of the user's Aave position
 
-        // Process Aave API response
-        // The structure depends on the actual API - this is a placeholder
-        if (data.reserves) {
-            for (const reserve of data.reserves) {
-                // Only process positions with debt
-                if (reserve.totalDebt && parseFloat(reserve.totalDebt) > 0) {
-                    const collateralAssets = reserve.collaterals || [];
+        // Estimate average prices (we'll use ETH as proxy for collateral and USDC for debt)
+        // In production, you'd want to get actual reserve breakdown
+        const estimatedCollateralPrice = await getTokenPrice("ETH"); // Default assumption
+        const estimatedDebtPrice = await getTokenPrice("USDC"); // Default assumption
 
-                    for (const collateral of collateralAssets) {
-                        if (parseFloat(collateral.amount || "0") > 0) {
-                            const collateralSymbol = collateral.symbol || "UNKNOWN";
-                            const debtSymbol = reserve.symbol || "UNKNOWN";
+        // Calculate estimated amounts (approximate)
+        const estimatedCollateralAmount = formatted.totalCollateral / estimatedCollateralPrice;
+        const estimatedDebtAmount = formatted.totalDebt / estimatedDebtPrice;
 
-                            // Get prices
-                            const collateralPrice = await getTokenPrice(collateralSymbol);
-                            const debtPrice = await getTokenPrice(debtSymbol);
+        // Use liquidationThresholdPercent (which is in percentage points like 82.5 for 82.5%)
+        // Convert to decimal (0.825) for our liquidationThreshold field
+        const liquidationThresholdDecimal = formatted.liquidationThresholdPercent / 100;
 
-                            // Parse amounts
-                            const collateralAmount = collateral.amount || "0";
-                            const debtAmount = reserve.totalDebt || "0";
+        positions.push({
+            id: `${walletAddress}-aave-v3-consolidated-${Date.now()}`,
+            protocolId: "aave-v3",
+            collateralAsset: "MIXED",
+            debtAsset: "MIXED",
+            collateralAmount: estimatedCollateralAmount.toFixed(6),
+            debtAmount: estimatedDebtAmount.toFixed(6),
+            collateralValue: formatted.totalCollateral,
+            debtValue: formatted.totalDebt,
+            liquidationThreshold: liquidationThresholdDecimal || 0.8,
+        });
 
-                            // Calculate USD values
-                            const collateralValue = parseFloat(collateralAmount) * collateralPrice;
-                            const debtValue = parseFloat(debtAmount) * debtPrice;
-
-                            // Get liquidation threshold (LTV)
-                            const liquidationThreshold = parseFloat(reserve.liquidationThreshold || "0.8") / 100;
-
-                            positions.push({
-                                id: `${walletAddress}-aave-v3-${collateralSymbol}-${debtSymbol}-${Date.now()}`,
-                                protocolId: "aave-v3",
-                                collateralAsset: collateralSymbol,
-                                debtAsset: debtSymbol,
-                                collateralAmount,
-                                debtAmount,
-                                collateralValue,
-                                debtValue,
-                                liquidationThreshold,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
+        console.log(`[Aave] Created ${positions.length} position(s)`);
         return positions;
     } catch (error) {
-        console.error("Error fetching Aave positions from API:", error);
+        console.error("Error fetching Aave positions from contracts:", error);
         return positions;
     }
 }
-
-/**
- * Fetch Aave positions using direct contract calls (more reliable)
- * This requires ethers or viem - implement if you add those dependencies
- */
-export async function fetchAavePositionsDirect(
-    walletAddress: string
-): Promise<AavePosition[]> {
-    // TODO: Implement with ethers/viem for direct contract calls
-    // This would be the most reliable method
-
-    // Example structure:
-    // 1. Connect to Ethereum via RPC
-    // 2. Call Aave Pool.getUserAccountData(walletAddress)
-    // 3. Iterate through reserves to get collateral/debt
-    // 4. Query price oracle for current prices
-    // 5. Get liquidation thresholds from reserve config
-
-    return [];
-}
-

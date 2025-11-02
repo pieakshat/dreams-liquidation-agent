@@ -4,7 +4,7 @@ import type { PositionMemory } from "../types/memory.js";
 
 export const initializeMonitoringAction = action({
     name: "initializeMonitoring",
-    description: "Sets up liquidation monitoring for a wallet address and specifies which lending protocols to check. ALWAYS call this FIRST when a user mentions a wallet address (0x... format). Extract the wallet address from the user's message. If protocols aren't specified, use 'aave-v3' as default. Required: wallet address and at least one protocol ID. Example: When user says 'track wallet 0x123...', extract 0x123... and call this action.",
+    description: "Sets up liquidation monitoring for a wallet address and specifies which lending protocols to check. ALWAYS call this FIRST when a user mentions a wallet address (0x... format). Pass the wallet address directly from the user's message. If protocols aren't specified, use 'aave-v3' as default. Required: wallet address and at least one protocol ID. Example: When user says 'track wallet 0x123...', pass 0x123... to this action.",
     schema: z.object({
         wallet: z.string().min(1, "Wallet address is required").refine(
             (val) => /^0x[a-fA-F0-9]{40}$/.test(val),
@@ -30,6 +30,34 @@ export const initializeMonitoringAction = action({
         if (!wallet || !protocolIds || protocolIds.length === 0) {
             console.error("[initializeMonitoring] ERROR: Missing required fields", { wallet, protocolIds });
             return { success: false, error: "Wallet address and protocol IDs are required" };
+        }
+
+        // Check if context exists
+        if (!ctx) {
+            console.error("[initializeMonitoring] ERROR: Context is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
+        // Initialize memory if it doesn't exist or is missing fields
+        if (!ctx.agentMemory) {
+            console.log("[initializeMonitoring] Initializing new context memory");
+            (ctx as any).agentMemory = {
+                wallet: "",
+                protocolIds: [],
+                positions: [],
+                monitoringState: {
+                    healthFactors: [],
+                    liquidationPrices: [],
+                    alertThreshold: 15,
+                    alertThresholdHit: false,
+                    lastChecked: 0,
+                },
+                checkedAt: 0,
+                lastUpdated: Date.now(),
+            };
         }
 
         const agentMemory = ctx.agentMemory as PositionMemory;
@@ -87,6 +115,34 @@ export const updateWalletAction = action({
             return { success: false, error: "Wallet address is required" };
         }
 
+        // Check if context exists
+        if (!ctx) {
+            console.error("[updateWallet] ERROR: Context is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
+        // Initialize memory if it doesn't exist
+        if (!ctx.agentMemory) {
+            console.log("[updateWallet] Initializing new context memory");
+            (ctx as any).agentMemory = {
+                wallet: "",
+                protocolIds: [],
+                positions: [],
+                monitoringState: {
+                    healthFactors: [],
+                    liquidationPrices: [],
+                    alertThreshold: 15,
+                    alertThresholdHit: false,
+                    lastChecked: 0,
+                },
+                checkedAt: 0,
+                lastUpdated: Date.now(),
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         agentMemory.wallet = wallet;
@@ -118,6 +174,19 @@ export const getMonitoringConfigAction = action({
     schema: z.object({}),
     handler(call, ctx) {
         console.log("[getMonitoringConfig] Action called");
+
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[getMonitoringConfig] ERROR: Context or agentMemory is undefined");
+            return {
+                wallet: "Not set",
+                protocolIds: [],
+                alertThreshold: 15,
+                positionsCount: 0,
+                lastChecked: 0,
+                alertThresholdHit: false,
+            };
+        }
 
         const agentMemory = ctx.agentMemory as PositionMemory;
 

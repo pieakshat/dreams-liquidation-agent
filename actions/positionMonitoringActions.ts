@@ -28,6 +28,30 @@ export const discoverPositionsAction = action({
         const wallet = (call as any).wallet || (call as any).data?.wallet;
         const protocolIds = (call as any).protocolIds || (call as any).data?.protocolIds;
 
+        if (!ctx) {
+            console.error("[discoverPositions] ERROR: Context is undefined");
+            return { success: false, error: "Context not available" };
+        }
+
+        // Initialize memory if it doesn't exist
+        if (!ctx.agentMemory) {
+            console.log("[discoverPositions] Initializing context memory");
+            (ctx as any).agentMemory = {
+                wallet: "",
+                protocolIds: [],
+                positions: [],
+                monitoringState: {
+                    healthFactors: [],
+                    liquidationPrices: [],
+                    alertThreshold: 15,
+                    alertThresholdHit: false,
+                    lastChecked: 0,
+                },
+                checkedAt: 0,
+                lastUpdated: Date.now(),
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
         const finalWallet = wallet || agentMemory.wallet;
         const finalProtocolIds = protocolIds || agentMemory.protocolIds;
@@ -84,21 +108,26 @@ export const discoverPositionsAction = action({
         agentMemory.positions = discoveredPositions;
         agentMemory.lastUpdated = Date.now();
 
+        const positionsFound = discoveredPositions.length;
+        const message = positionsFound > 0
+            ? `Found ${positionsFound} position(s) across ${finalProtocolIds.length} protocol(s) for wallet ${finalWallet}. Position details: ${discoveredPositions.map(p => `${p.collateralAsset}/${p.debtAsset}`).join(", ")}`
+            : `No positions found for wallet ${finalWallet} on protocols: ${finalProtocolIds.join(", ")}. This wallet may not have any active borrow positions.`;
+
         const result = {
             success: true,
-            positionsFound: discoveredPositions.length,
+            positionsFound,
             positions: discoveredPositions.map(pos => ({
                 id: pos.id,
                 protocolId: pos.protocolId,
                 collateralAsset: pos.collateralAsset,
                 debtAsset: pos.debtAsset,
             })),
-            message: discoveredPositions.length > 0
-                ? `Found ${discoveredPositions.length} position(s) across ${finalProtocolIds.length} protocol(s)`
-                : `No positions found. Note: Protocol API integration needed to fetch real positions.`,
+            message,
         };
 
-        console.log("[discoverPositions] Success! Returning:", JSON.stringify(result, null, 2));
+        console.log("[discoverPositions] Success! Positions found:", positionsFound);
+        console.log("[discoverPositions] Message:", message);
+        console.log("[discoverPositions] Full result:", JSON.stringify(result, null, 2));
         return result;
     },
 });
@@ -122,6 +151,34 @@ export const addPositionAction = action({
         positionId: z.string().optional(), // Auto-generated if not provided
     }),
     handler(call, ctx) {
+        console.log("[addPosition] Action called");
+        console.log("[addPosition] call object:", JSON.stringify(call, null, 2));
+
+        if (!ctx) {
+            return {
+                success: false,
+                error: "Context not available",
+            };
+        }
+
+        // Initialize memory if needed
+        if (!ctx.agentMemory) {
+            (ctx as any).agentMemory = {
+                wallet: "",
+                protocolIds: [],
+                positions: [],
+                monitoringState: {
+                    healthFactors: [],
+                    liquidationPrices: [],
+                    alertThreshold: 15,
+                    alertThresholdHit: false,
+                    lastChecked: 0,
+                },
+                checkedAt: 0,
+                lastUpdated: Date.now(),
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         if (!agentMemory.wallet) {
@@ -131,21 +188,38 @@ export const addPositionAction = action({
             };
         }
 
-        const positionId = call.data.positionId || `${agentMemory.wallet}-${call.data.protocolId}-${Date.now()}`;
+        // Data is directly on call, not call.data
+        const protocolId = (call as any).protocolId || (call as any).data?.protocolId;
+        const collateralAsset = (call as any).collateralAsset || (call as any).data?.collateralAsset;
+        const debtAsset = (call as any).debtAsset || (call as any).data?.debtAsset;
+        const collateralAmount = (call as any).collateralAmount || (call as any).data?.collateralAmount;
+        const debtAmount = (call as any).debtAmount || (call as any).data?.debtAmount;
+        const collateralValue = (call as any).collateralValue || (call as any).data?.collateralValue;
+        const debtValue = (call as any).debtValue || (call as any).data?.debtValue;
+        const liquidationThreshold = (call as any).liquidationThreshold || (call as any).data?.liquidationThreshold;
+
+        if (!protocolId || !collateralAsset || !debtAsset) {
+            return {
+                success: false,
+                error: "Missing required fields: protocolId, collateralAsset, debtAsset",
+            };
+        }
+
+        const positionId = (call as any).positionId || (call as any).data?.positionId || `${agentMemory.wallet}-${protocolId}-${Date.now()}`;
 
         // Check if position already exists
         const existingIndex = agentMemory.positions.findIndex(p => p.id === positionId);
 
         const newPosition = {
             id: positionId,
-            protocolId: call.data.protocolId,
-            collateralAsset: call.data.collateralAsset,
-            debtAsset: call.data.debtAsset,
-            collateralAmount: call.data.collateralAmount,
-            debtAmount: call.data.debtAmount,
-            collateralValue: call.data.collateralValue,
-            debtValue: call.data.debtValue,
-            liquidationThreshold: call.data.liquidationThreshold,
+            protocolId,
+            collateralAsset,
+            debtAsset,
+            collateralAmount,
+            debtAmount,
+            collateralValue,
+            debtValue,
+            liquidationThreshold,
         };
 
         if (existingIndex >= 0) {
@@ -159,7 +233,7 @@ export const addPositionAction = action({
         return {
             success: true,
             positionId,
-            message: `${existingIndex >= 0 ? "Updated" : "Added"} position: ${call.data.collateralAsset}/${call.data.debtAsset} on ${call.data.protocolId}`,
+            message: `${existingIndex >= 0 ? "Updated" : "Added"} position: ${(call as any).collateralAsset}/${(call as any).debtAsset} on ${(call as any).protocolId}`,
         };
     },
 });
@@ -175,6 +249,15 @@ export const checkHealthFactorAction = action({
         positionId: z.string().optional(), // If provided, check only this position
     }),
     handler(call, ctx) {
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[checkHealthFactor] ERROR: Context or agentMemory is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         if (!agentMemory.wallet || agentMemory.protocolIds.length === 0) {
@@ -192,8 +275,9 @@ export const checkHealthFactorAction = action({
             };
         }
 
-        const positionsToCheck = call.data.positionId
-            ? agentMemory.positions.filter(p => p.id === call.data.positionId)
+        const positionId = (call as any).positionId || (call as any).data?.positionId;
+        const positionsToCheck = positionId
+            ? agentMemory.positions.filter(p => p.id === positionId)
             : agentMemory.positions;
 
         const healthFactors = positionsToCheck.map((position) => {
@@ -255,6 +339,15 @@ export const calculateLiquidationPriceAction = action({
         positionId: z.string().optional(),
     }),
     handler(call, ctx) {
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[calculateLiquidationPrice] ERROR: Context or agentMemory is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         if (agentMemory.positions.length === 0) {
@@ -264,8 +357,9 @@ export const calculateLiquidationPriceAction = action({
             };
         }
 
-        const positionsToCheck = call.data.positionId
-            ? agentMemory.positions.filter(p => p.id === call.data.positionId)
+        const positionId = (call as any).positionId || (call as any).data?.positionId;
+        const positionsToCheck = positionId
+            ? agentMemory.positions.filter(p => p.id === positionId)
             : agentMemory.positions;
 
         const liquidationPrices = positionsToCheck.map((position) => {
@@ -334,6 +428,15 @@ export const calculateBufferAction = action({
         positionId: z.string().optional(),
     }),
     handler(call, ctx) {
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[calculateBuffer] ERROR: Context or agentMemory is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         // First ensure we have health factors and liquidation prices
@@ -347,8 +450,9 @@ export const calculateBufferAction = action({
             };
         }
 
-        const positionsToCheck = call.data.positionId
-            ? agentMemory.positions.filter(p => p.id === call.data.positionId)
+        const positionId = (call as any).positionId || (call as any).data?.positionId;
+        const positionsToCheck = positionId
+            ? agentMemory.positions.filter(p => p.id === positionId)
             : agentMemory.positions;
 
         const bufferResults = positionsToCheck.map((position) => {
@@ -399,6 +503,15 @@ export const checkAlertThresholdAction = action({
     }),
     handler(call, ctx) {
         console.log("[checkAlertThreshold] Action called");
+
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[checkAlertThreshold] ERROR: Context or agentMemory is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
 
         const agentMemory = ctx.agentMemory as PositionMemory;
 
@@ -465,6 +578,15 @@ export const monitorPositionsAction = action({
         alertThreshold: z.number().optional(),
     }),
     handler(call, ctx) {
+        // Check if context exists
+        if (!ctx || !ctx.agentMemory) {
+            console.error("[monitorPositions] ERROR: Context or agentMemory is undefined");
+            return {
+                success: false,
+                error: "Context not available. Please ensure the liquidation-monitor context is activated.",
+            };
+        }
+
         const agentMemory = ctx.agentMemory as PositionMemory;
 
         if (!agentMemory.wallet || agentMemory.protocolIds.length === 0) {
@@ -553,7 +675,7 @@ export const monitorPositionsAction = action({
         });
 
         // Step 4: Check alert threshold
-        const threshold = call.data.alertThreshold ?? agentMemory.monitoringState.alertThreshold;
+        const threshold = (call as any).alertThreshold || (call as any).data?.alertThreshold || agentMemory.monitoringState.alertThreshold;
         const alertThresholdHit = bufferPercents.some(buffer => buffer < threshold);
 
         agentMemory.monitoringState.alertThresholdHit = alertThresholdHit;

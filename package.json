@@ -7,11 +7,12 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@ai-sdk/groq": "^2.0.27",
+    "@daydreamsai/cli": "^0.3.22",
     "@daydreamsai/core": "^0.3.22",
     "ai": "^5.0.86",
     "typescript": "^5.9.3",
-    "zod": "^4.1.12",
-    "@ai-sdk/groq": "^2.0.27",
-    "@daydreamsai/cli": "^0.3.22"
+    "viem": "^2.38.6",
+    "zod": "^4.1.12"
   }
 }

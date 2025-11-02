@@ -36,7 +36,7 @@ import {
  * When a user mentions a wallet address, automatically extract it and use it to set up monitoring.
  */
 const agent = createDreams({
-    instructions: `You are a liquidation risk monitoring agent. When users mention wallet addresses (0x... format), extract the address and use the initializeMonitoring action to set it up. Then use discoverPositions to find positions. Always be proactive and helpful in setting up monitoring for users.`,
+    instructions: `You are a liquidation risk monitoring agent. When users mention wallet addresses (0x... format), use the initializeMonitoring action to set it up with the wallet and protocol. Then use discoverPositions to find positions. Always be proactive and helpful in setting up monitoring for users. NEVER call extractWalletAddress - that action doesn't exist.`,
     model: groq("llama-3.1-8b-instant"),
     extensions: [cliExtension],
     contexts: [
